@@ -1,12 +1,14 @@
 import errno
 import multiprocessing
 import socket
+import struct
 import threading
 from random import *
 from threading import Thread
 import time
 from time import sleep
 import copy
+from scapy.all import get_if_addr
 
 CLIENT_COUNT_TO_START_GAME = 2
 GAME_DURATION = 10
@@ -59,9 +61,10 @@ class Game:
 
 class MyServer:
     hostname = socket.gethostname()
-    #ip = socket.gethostbyname(hostname)
-    ip = "172.1.0.111"
-    serverPort = 3500
+    ip = socket.gethostbyname(hostname)
+    udpIp = get_if_addr('eth1')
+    serverPort = randint(3500, 4000)
+    udpPort = 13117
     clientCount = 0
     state = 0  # 0 = waiting, 1 = playing
     clients = []
@@ -78,12 +81,15 @@ class MyServer:
         if self.state == 1:
             clientsocket.close()
             return
-        msg = clientsocket.recv(BUFFER_SIZE)
-        name = msg.decode()
-        self.clientCount += 1
-        self.clients.append([name, clientsocket])
-        if self.clientCount == CLIENT_COUNT_TO_START_GAME:
-            self.start_game()
+        try:
+            msg = clientsocket.recv(BUFFER_SIZE)
+            name = msg.decode()
+            self.clientCount += 1
+            self.clients.append([name, clientsocket])
+            if self.clientCount == CLIENT_COUNT_TO_START_GAME:
+                self.start_game()
+        except:
+            pass
 
     def send_to_everyone(self, msg):
         for client in self.clients:
@@ -92,15 +98,32 @@ class MyServer:
             except socket.error as e:
                 pass
 
+    def create_question(self):
+        type = randint(0, 3)
+        if type == 0:
+            n1 = randint(0, 9)
+            n2 = randint(0, 9 - n1)
+            return "How much is %s+%s?" %(n1, n2), n1 + n2
+        elif type == 1:
+            n1 = randint(0, 9)
+            n2 = randint(0, n1)
+            return "How much is %s-%s?" %(n1, n2), n1 - n2
+        elif type == 2:
+            n1 = randint(1, 9)
+            n2 = randint(0, int(9 / n1))
+            return "How much is %s*%s?" %(n1, n2), n1 * n2
+        elif type == 3:
+            n1 = randint(0, 4)
+            n2 = randint(0, 2) * n1
+            return "How much is %s/%s?" %(n2, n1), n2 / n1
+
     def start_game(self):
         self.state = 1
-        n1 = randint(0, 9)
-        n2 = randint(0, 9 - n1)
+        question, ans = self.create_question()
         msg = (
-                "Welcome to Quick Maths. \nPlayer 1: %sPlayer 2: %s==\nPlease answer the following question as fast as you can:\nHow much is %s+%s?" % (
-            self.clients[0][0], self.clients[1][0], n1, n2)).encode()
+                "Welcome to Quick Maths. \nPlayer 1: %sPlayer 2: %s==\nPlease answer the following question as fast as you can:\n%s" % (
+            self.clients[0][0], self.clients[1][0], question)).encode()
         self.send_to_everyone(msg)
-        ans = n1 + n2
         game = Game()
         game.setTime()
         t1 = threading.Thread(target=self.wait_for_ans, args=(self.clients[0], self.clients[1], ans, game))
@@ -177,8 +200,8 @@ class MyServer:
 
     def start_tcp_server(self):
         s = socket.socket()  # Create a socket object
-        s.bind((self.ip, MyServer.serverPort))
-        print_in_color(bcolors.OKGREEN, ("Server started, listening on IP address %s" % self.ip))
+        s.bind(("", MyServer.serverPort))
+        print_in_color(bcolors.OKGREEN, ("Server started, listening on IP address %s" % self.udpIp))
 
         s.listen(5)
         while True:
@@ -190,10 +213,10 @@ class MyServer:
     def main(self, ):
         x = threading.Thread(target=self.start_tcp_server, args=())
         x.start()
-        self.server = socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP)
+        self.server = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.server.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        self.server.settimeout(0.2)
-        self.server.bind((self.ip, 44444))
+        self.server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.server.bind((self.udpIp, 13117))
         self.broadcast(self.server)
 
     def checkAndRemoveClosedClients(self):
@@ -202,13 +225,11 @@ class MyServer:
 
     def broadcast(self, server):
         while self.state == 0:
-            print(self.clientCount)
+            #print(self.clientCount)
             self.checkAndRemoveClosedClients()
-            message = (0xabcddcba).to_bytes(4, 'big', signed=False)
-            message += (2).to_bytes(1, 'big')
-            message += MyServer.serverPort.to_bytes(2, 'big')
-            server.sendto(message, ('<broadcast>', 13117))
-            sleep(1)
+            message = struct.pack('>IbH', 0xabcddcba, 0x2, self.serverPort)
+            server.sendto(message, ('<broadcast>', self.udpPort))
+            sleep(0.1)
 
 
 if __name__ == "__main__":
