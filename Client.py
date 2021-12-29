@@ -2,6 +2,7 @@ import errno
 import multiprocessing
 import os
 import socket
+import struct
 import sys
 import threading
 import time
@@ -10,6 +11,7 @@ import fcntl
 import termios
 import tty
 import traceback
+from scapy.all import get_if_addr
 
 tcpSocket = None
 
@@ -23,8 +25,10 @@ def got_keyboard_data(stdin):
         print(answer)
         tcpSocket.send(answer.encode())
 
+
 def print_in_color(color, string):
     print(color + string + bcolors.ENDC)
+
 
 class bcolors:
     PINK = '\033[95m'
@@ -37,7 +41,7 @@ class bcolors:
 
 def printServerRes(s):
     result, addr2 = s.recvfrom(1024)
-    print_in_color(bcolors.OKBLUE+bcolors.BOLD, result.decode())
+    print_in_color(bcolors.OKBLUE + bcolors.BOLD, result.decode())
     global tcpSocket
     tcpSocket = None
     m_selector.unregister(sys.stdin)
@@ -57,23 +61,46 @@ def clearSocket(s):
 
 
 teamName = "Champs"
-Mode = 0 #0 for listening, 1 for playing
+udpPort = 13117
+Mode = 0  # 0 for listening, 1 for playing
 print_in_color(bcolors.purple, "Client started, listening for offer requests...")
 c = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 c.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
 c.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-c.bind(("", 13117))
+c.bind(("", udpPort))
 while True:
     date = []
-    data, addr = c.recvfrom(1024)
-    cookie = int.from_bytes(data[0:4:1], byteorder='big', signed=False)
-    messageType = int.from_bytes(data[4:5:1], byteorder='big', signed=False)
-    serverPort = int.from_bytes(data[5:7:1], byteorder='big', signed=False)
-    if cookie == 0xabcddcba:
-        print(bcolors.PINK + ("Received offer from %s, attempting to connect..." % str(addr))+bcolors.ENDC)
+    try:
+        data, addr = c.recvfrom(1024)
+    except:
+        continue
+    port = None
+    if len(data) == 7:
+        try:
+            cookie, messageType, serverPort = struct.unpack('<4sbH', data)
+            if (cookie == b'\xba\xdc\xcd\xab') and (messageType == int.from_bytes(b'\x02', "little")):
+                port = serverPort
+        except:
+            pass
+        try:
+            cookie, messageType, serverPort = struct.unpack('>4sbH', data)
+            if (cookie == b'\xab\xcd\xdc\xba') and (messageType == int.from_bytes(b'\x02', "big")):
+                port = serverPort
+        except:
+            pass
+        else:
+            try:
+                cookie, messageType, serverPort = struct.unpack('IbH', data)
+                if (cookie == 0xabcddcba) and (messageType == 0x2):
+                    port = serverPort
+            except:
+                pass
+
+    if port is not None:
+        print(bcolors.PINK + ("Received offer from %s, attempting to connect..." % str(addr)) + bcolors.ENDC)
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             try:
-                s.connect((addr[0], serverPort))
+                s.connect((addr[0], port))
                 s.send((teamName + "\n").encode())
                 question, addr1 = s.recvfrom(1024)
                 print_in_color(bcolors.BOLD, question.decode())
@@ -94,7 +121,7 @@ while True:
                 termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
                 s.close()
             except Exception:
-                #print(traceback.format_exc())
+                print(traceback.format_exc())
                 s.close()
                 c.close()
                 exit(0)
